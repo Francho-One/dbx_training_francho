@@ -28,6 +28,11 @@ variables:
   dp_config_file:
     description: Config file name (in src/pipelines/config) for the @dp pipeline
     default: sdp_pipeline_config_dp.json
+  branch_suffix:
+    description: >-
+      Set by CI/CD to "_<branch>" so every feature branch gets its own dev
+      deployment (own folder + own resource name prefix). Empty for local deploys.
+    default: ""
 
 targets:
   dev:
@@ -35,6 +40,12 @@ targets:
     # job schedules are paused. Deployed under the deploying user's home folder.
     mode: development
     default: true
+    # Per-branch isolation: CI passes --var="branch_suffix=_<branch>".
+    # With the empty default, local deploys keep the standard dev path/prefix.
+    workspace:
+      root_path: /Workspace/Users/${workspace.current_user.userName}/.bundle/${bundle.name}/${bundle.target}${var.branch_suffix}
+    presets:
+      name_prefix: "[dev ${workspace.current_user.short_name}${var.branch_suffix}] "
 
   prod:
     # Deployed by CI/CD (GitHub Actions) with a service principal.
