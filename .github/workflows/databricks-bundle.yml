@@ -1,22 +1,32 @@
 # CI/CD for the dox_training Declarative Automation Bundle
 #
 # Flow
-#   1. Push to any feature branch  -> validate + deploy to DEV (one isolated
-#                                     deployment per branch: "[dev <sp>_<branch>]")
-#   2. Pull request into main      -> validate dev + prod (required status check)
+#   1. Push to any feature branch  -> validate + deploy to the DEV workspace
+#                                     (latest pushed branch wins)
+#   2. Pull request into main      -> validate dev + prod (required status checks)
 #                                     PR must be APPROVED before it can be merged
 #                                     (enforced by the GitHub branch protection rule on main)
 #   3. Approved PR merged to main  -> create production tag prod-YYYYMMDD-HHMMSS
 #                                     -> deploy that tag to PROD (deploy only, no job run)
 #
-# Required GitHub repository secrets (service principal with OAuth M2M):
-#   DATABRICKS_HOST           e.g. https://adb-7405610410794404.4.azuredatabricks.net
+# Deployment location (set in databricks.yml, variable deploy_root):
+#   DEV workspace  -> /Workspace/Deployments/dox_training/files
+#   PROD workspace -> /Workspace/Deployments/dox_training/files
+#   Nothing is deployed to /Workspace/Users/<service principal>. Jobs and
+#   pipelines reference their code from that folder.
+#   One-time setup in EACH workspace (admin): create /Workspace/Deployments
+#   and grant the service principal CAN_MANAGE on it.
+#
+# Required secrets, defined per GitHub ENVIRONMENT (Settings -> Environments)
+# "dev" and "prod" (service principal with OAuth M2M):
+#   DATABRICKS_HOST           dev:  https://adb-7405610410794404.4.azuredatabricks.net
+#                             prod: https://<prod workspace host>
 #   DATABRICKS_CLIENT_ID      service principal application (client) ID
 #   DATABRICKS_CLIENT_SECRET  service principal OAuth secret
 #
 # Required GitHub settings (Settings -> Branches -> Branch protection rule for "main"):
 #   - Require a pull request before merging, Require approvals: 1 (or more)
-#   - Require status checks to pass: "validate-pr"
+#   - Require status checks to pass: "validate-pr (dev)" and "validate-pr (prod)"
 #   - Do not allow bypassing the above settings (blocks direct pushes to main)
 
 name: databricks-bundle
@@ -40,33 +50,30 @@ jobs:
     runs-on: ubuntu-latest
     environment: dev
     concurrency:
-      group: dev-${{ github.ref }}
-      cancel-in-progress: true
-    steps:
-      - uses: actions/checkout@v4
-      - uses: databricks/setup-cli@main
-      - name: Compute branch suffix
-        # feature/my-change -> _feature_my_change (safe for folder + resource names)
-        # (branch name passed via env, not inlined, to avoid script injection)
-        env:
-          BRANCH: ${{ github.ref_name }}
-        run: echo "BRANCH_SUFFIX=_$(printf '%s' "$BRANCH" | tr -c 'A-Za-z0-9' '_')" >> "$GITHUB_ENV"
-      - name: Validate bundle (dev)
-        run: databricks bundle validate -t dev --var="branch_suffix=${BRANCH_SUFFIX}"
-      - name: Deploy bundle (dev)
-        run: databricks bundle deploy -t dev --var="branch_suffix=${BRANCH_SUFFIX}"
-
-  # ---------------------------------------------------------------- PULL REQUEST
-  validate-pr:
-    if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
+      group: dev
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@v4
       - uses: databricks/setup-cli@main
       - name: Validate bundle (dev)
         run: databricks bundle validate -t dev
-      - name: Validate bundle (prod)
-        run: databricks bundle validate -t prod
+      - name: Deploy bundle (dev)
+        run: databricks bundle deploy -t dev
+
+  # ---------------------------------------------------------------- PULL REQUEST
+  validate-pr:
+    # One run per workspace, each with its own environment secrets.
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        target: [dev, prod]
+    environment: ${{ matrix.target }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: databricks/setup-cli@main
+      - name: Validate bundle
+        run: databricks bundle validate -t ${{ matrix.target }}
 
   # ---------------------------------------------------------------- PROD
   release-prod:
