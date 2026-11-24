@@ -38,10 +38,9 @@ on:
     branches: [main]
   workflow_dispatch:
 
-env:
-  DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
-  DATABRICKS_CLIENT_ID: ${{ secrets.DATABRICKS_CLIENT_ID }}
-  DATABRICKS_CLIENT_SECRET: ${{ secrets.DATABRICKS_CLIENT_SECRET }}
+# Credentials are set per job (job-level env), so each job reads the secrets of
+# ITS environment (dev / prod). Secrets must be created under
+# Settings -> Environments -> <dev|prod> -> Environment SECRETS (not variables).
 
 jobs:
   # ---------------------------------------------------------------- DEV
@@ -49,12 +48,21 @@ jobs:
     if: github.event_name == 'push' && github.ref != 'refs/heads/main'
     runs-on: ubuntu-latest
     environment: dev
+    env:
+      DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+      DATABRICKS_CLIENT_ID: ${{ secrets.DATABRICKS_CLIENT_ID }}
+      DATABRICKS_CLIENT_SECRET: ${{ secrets.DATABRICKS_CLIENT_SECRET }}
     concurrency:
       group: dev
       cancel-in-progress: false
     steps:
       - uses: actions/checkout@v4
       - uses: databricks/setup-cli@main
+      - name: Check credentials
+        run: |
+          for v in DATABRICKS_HOST DATABRICKS_CLIENT_ID DATABRICKS_CLIENT_SECRET; do
+            [ -n "${!v}" ] || { echo "::error::$v is empty - add it as a SECRET of environment 'dev'"; exit 1; }
+          done
       - name: Validate bundle (dev)
         run: databricks bundle validate -t dev
       - name: Deploy bundle (dev)
@@ -69,9 +77,20 @@ jobs:
       matrix:
         target: [dev, prod]
     environment: ${{ matrix.target }}
+    env:
+      DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+      DATABRICKS_CLIENT_ID: ${{ secrets.DATABRICKS_CLIENT_ID }}
+      DATABRICKS_CLIENT_SECRET: ${{ secrets.DATABRICKS_CLIENT_SECRET }}
     steps:
       - uses: actions/checkout@v4
       - uses: databricks/setup-cli@main
+      - name: Check credentials
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          for v in DATABRICKS_HOST DATABRICKS_CLIENT_ID DATABRICKS_CLIENT_SECRET; do
+            [ -n "${!v}" ] || { echo "::error::$v is empty - add it as a SECRET of environment '$TARGET'"; exit 1; }
+          done
       - name: Validate bundle
         run: databricks bundle validate -t ${{ matrix.target }}
 
@@ -81,6 +100,10 @@ jobs:
     if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-latest
     environment: prod
+    env:
+      DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+      DATABRICKS_CLIENT_ID: ${{ secrets.DATABRICKS_CLIENT_ID }}
+      DATABRICKS_CLIENT_SECRET: ${{ secrets.DATABRICKS_CLIENT_SECRET }}
     permissions:
       contents: write        # needed to push the production tag
     concurrency:
@@ -91,6 +114,11 @@ jobs:
         with:
           fetch-depth: 0
       - uses: databricks/setup-cli@main
+      - name: Check credentials
+        run: |
+          for v in DATABRICKS_HOST DATABRICKS_CLIENT_ID DATABRICKS_CLIENT_SECRET; do
+            [ -n "${!v}" ] || { echo "::error::$v is empty - add it as a SECRET of environment 'prod'"; exit 1; }
+          done
 
       - name: Validate bundle (prod)
         run: databricks bundle validate -t prod
