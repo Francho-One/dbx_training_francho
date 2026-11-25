@@ -49,6 +49,11 @@ targets:
       name_prefix: "[dev] "
       pipelines_development: true
       trigger_pause_status: PAUSED
+    # Dev is a shared deployment (deployed by the CI service principal), so all
+    # workspace users get CAN_MANAGE on the deployed job, pipeline and folder.
+    permissions:
+      - level: CAN_MANAGE
+        group_name: users
 
   prod:
     # PROD workspace (host from the CI secret DATABRICKS_HOST of the GitHub
