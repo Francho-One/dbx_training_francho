@@ -1,4 +1,4 @@
-# SDP pipeline using the modern @dp API (src/pipelines/sdp_customer_pipeline_dp.py)
+# SDP pipeline using the modern @dp API (src/declarative/sdp_customer_pipeline_dp.py)
 resources:
   pipelines:
     sdp_customer_pipeline_dp:
@@ -8,10 +8,10 @@ resources:
       serverless: true
       continuous: false
       channel: CURRENT
-      root_path: ../src/pipelines
+      root_path: ../src/declarative
       libraries:
         - file:
-            path: ../src/pipelines/sdp_customer_pipeline_dp.py
+            path: ../src/declarative/sdp_customer_pipeline_dp.py
       configuration:
         # Read by _load_config() in the pipeline code
-        pipeline.config_path: ${workspace.file_path}/src/pipelines/config/${var.dp_config_file}
+        pipeline.config_path: ${workspace.file_path}/src/declarative/config/${var.dp_config_file}

@@ -1,51 +1,145 @@
 # CI/CD for the dox_training Declarative Automation Bundle
 #
-# Pull request -> validate the bundle (dev target)
-# Push to main -> validate + deploy to prod, then run the pipelines job
+# Flow
+#   1. Push to any feature branch  -> validate + deploy to the DEV workspace
+#                                     (latest pushed branch wins)
+#   2. Pull request into main      -> validate dev + prod (required status checks)
+#                                     PR must be APPROVED before it can be merged
+#                                     (enforced by the GitHub branch protection rule on main)
+#   3. Approved PR merged to main  -> create production tag prod-YYYYMMDD-HHMMSS
+#                                     -> deploy that tag to PROD (deploy only, no job run)
 #
-# Required GitHub repository secrets (service principal with OAuth M2M):
-#   DATABRICKS_HOST           e.g. https://adb-7405610410794404.<n>.azuredatabricks.net
+# Deployment location (set in databricks.yml, variable deploy_root):
+#   DEV workspace  -> /Workspace/Deployments/dox_training/files
+#   PROD workspace -> /Workspace/Deployments/dox_training/files
+#   Nothing is deployed to /Workspace/Users/<service principal>. Jobs and
+#   pipelines reference their code from that folder.
+#   One-time setup in EACH workspace (admin): create /Workspace/Deployments
+#   and grant the service principal CAN_MANAGE on it.
+#
+# Required secrets, defined per GitHub ENVIRONMENT (Settings -> Environments)
+# "dev" and "prod" (service principal with OAuth M2M):
+#   DATABRICKS_HOST           dev:  https://adb-7405610410794404.4.azuredatabricks.net
+#                             prod: https://<prod workspace host>
 #   DATABRICKS_CLIENT_ID      service principal application (client) ID
 #   DATABRICKS_CLIENT_SECRET  service principal OAuth secret
+#
+# Required GitHub settings (Settings -> Branches -> Branch protection rule for "main"):
+#   - Require a pull request before merging, Require approvals: 1 (or more)
+#   - Require status checks to pass: "validate-pr (dev)" and "validate-pr (prod)"
+#   - Do not allow bypassing the above settings (blocks direct pushes to main)
 
 name: databricks-bundle
 
 on:
-  pull_request:
-    branches: [main]
   push:
+    branches: ['**']        # feature branches -> dev, main -> prod (tags are ignored)
+  pull_request:
     branches: [main]
   workflow_dispatch:
 
-concurrency:
-  group: databricks-bundle-${{ github.ref }}
-  cancel-in-progress: false
-
-env:
-  DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
-  DATABRICKS_CLIENT_ID: ${{ secrets.DATABRICKS_CLIENT_ID }}
-  DATABRICKS_CLIENT_SECRET: ${{ secrets.DATABRICKS_CLIENT_SECRET }}
+# Credentials are set per job (job-level env), so each job reads the secrets of
+# ITS environment (dev / prod). Secrets must be created under
+# Settings -> Environments -> <dev|prod> -> Environment SECRETS (not variables).
 
 jobs:
-  validate:
+  # ---------------------------------------------------------------- DEV
+  deploy-dev:
+    if: github.event_name == 'push' && github.ref != 'refs/heads/main'
     runs-on: ubuntu-latest
+    environment: dev
+    env:
+      DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+      DATABRICKS_CLIENT_ID: ${{ secrets.DATABRICKS_CLIENT_ID }}
+      DATABRICKS_CLIENT_SECRET: ${{ secrets.DATABRICKS_CLIENT_SECRET }}
+      DATABRICKS_AUTH_TYPE: oauth-m2m   # force service principal OAuth, no auto-detection
+    concurrency:
+      group: dev
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@v4
       - uses: databricks/setup-cli@main
+      - name: Check credentials
+        run: |
+          for v in DATABRICKS_HOST DATABRICKS_CLIENT_ID DATABRICKS_CLIENT_SECRET; do
+            [ -n "${!v}" ] || { echo "::error::$v is empty - add it as a SECRET of environment 'dev'"; exit 1; }
+          done
+          databricks auth describe   # shows host + auth type actually used (secrets masked)
       - name: Validate bundle (dev)
         run: databricks bundle validate -t dev
+      - name: Deploy bundle (dev)
+        run: databricks bundle deploy -t dev
 
-  deploy-prod:
-    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
-    needs: validate
+  # ---------------------------------------------------------------- PULL REQUEST
+  validate-pr:
+    # One run per workspace, each with its own environment secrets.
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
-    environment: prod
+    strategy:
+      matrix:
+        target: [dev, prod]
+    environment: ${{ matrix.target }}
+    env:
+      DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+      DATABRICKS_CLIENT_ID: ${{ secrets.DATABRICKS_CLIENT_ID }}
+      DATABRICKS_CLIENT_SECRET: ${{ secrets.DATABRICKS_CLIENT_SECRET }}
+      DATABRICKS_AUTH_TYPE: oauth-m2m   # force service principal OAuth, no auto-detection
     steps:
       - uses: actions/checkout@v4
       - uses: databricks/setup-cli@main
+      - name: Check credentials
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          for v in DATABRICKS_HOST DATABRICKS_CLIENT_ID DATABRICKS_CLIENT_SECRET; do
+            [ -n "${!v}" ] || { echo "::error::$v is empty - add it as a SECRET of environment '$TARGET'"; exit 1; }
+          done
+          databricks auth describe   # shows host + auth type actually used (secrets masked)
+      - name: Validate bundle
+        run: databricks bundle validate -t ${{ matrix.target }}
+
+  # ---------------------------------------------------------------- PROD
+  release-prod:
+    # Runs only when an (approved) PR is merged into main, or manually on main.
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-latest
+    environment: prod
+    env:
+      DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+      DATABRICKS_CLIENT_ID: ${{ secrets.DATABRICKS_CLIENT_ID }}
+      DATABRICKS_CLIENT_SECRET: ${{ secrets.DATABRICKS_CLIENT_SECRET }}
+      DATABRICKS_AUTH_TYPE: oauth-m2m   # force service principal OAuth, no auto-detection
+    permissions:
+      contents: write        # needed to push the production tag
+    concurrency:
+      group: prod
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: databricks/setup-cli@main
+      - name: Check credentials
+        run: |
+          for v in DATABRICKS_HOST DATABRICKS_CLIENT_ID DATABRICKS_CLIENT_SECRET; do
+            [ -n "${!v}" ] || { echo "::error::$v is empty - add it as a SECRET of environment 'prod'"; exit 1; }
+          done
+          databricks auth describe   # shows host + auth type actually used (secrets masked)
+
       - name: Validate bundle (prod)
         run: databricks bundle validate -t prod
-      - name: Deploy bundle (prod)
-        run: databricks bundle deploy -t prod
-      - name: Run pipelines job (prod)
-        run: databricks bundle run -t prod sdp_customer_pipelines_job
+
+      - name: Create production tag
+        run: |
+          TAG="prod-$(date -u +%Y%m%d-%H%M%S)"
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a "$TAG" -m "Production release $TAG (commit ${GITHUB_SHA::7})" "$GITHUB_SHA"
+          git push origin "$TAG"
+          echo "PROD_TAG=$TAG" >> "$GITHUB_ENV"
+          echo "### Production tag: \`$TAG\`" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Deploy tagged release (prod)
+        run: |
+          git checkout "$PROD_TAG"
+          databricks bundle deploy -t prod

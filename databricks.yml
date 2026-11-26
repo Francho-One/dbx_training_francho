@@ -28,20 +28,41 @@ variables:
   dp_config_file:
     description: Config file name (in src/pipelines/config) for the @dp pipeline
     default: sdp_pipeline_config_dp.json
+  deploy_root:
+    description: >-
+      Workspace folder the bundle is deployed to (not a user / CI service
+      principal home folder). Dev and prod are separate workspaces, so both
+      use the same path: code lands in <deploy_root>/files and jobs and
+      pipelines reference it from there.
+    default: /Workspace/Deployments/dox_training
 
 targets:
   dev:
-    # Resources are prefixed "[dev <user>]", pipelines run in development mode,
-    # job schedules are paused. Deployed under the deploying user's home folder.
-    mode: development
+    # DEV workspace (host from the CI secret DATABRICKS_HOST of the GitHub
+    # environment "dev"). Deployed to /Workspace/Deployments/dox_training.
+    # `mode: development` is NOT used because it forces the user name into the
+    # path; the same dev behaviour is set explicitly with presets instead.
     default: true
+    workspace:
+      root_path: ${var.deploy_root}
+    presets:
+      name_prefix: "[dev] "
+      pipelines_development: true
+      trigger_pause_status: PAUSED
+    # Dev is a shared deployment (deployed by the CI service principal), so all
+    # workspace users get CAN_MANAGE on the deployed job, pipeline and folder.
+    permissions:
+      - level: CAN_MANAGE
+        group_name: users
 
   prod:
-    # Deployed by CI/CD (GitHub Actions) with a service principal.
-    # Files live in the deploying principal's home folder (not writable by all users).
+    # PROD workspace (host from the CI secret DATABRICKS_HOST of the GitHub
+    # environment "prod"). Deployed by CI/CD with a service principal to
+    # /Workspace/Deployments/dox_training, NOT the principal's home folder.
+    # The permissions below are applied to that folder.
     mode: production
     workspace:
-      root_path: /Workspace/Users/${workspace.current_user.userName}/.bundle/${bundle.name}/${bundle.target}
+      root_path: ${var.deploy_root}
     permissions:
       - level: CAN_MANAGE
         user_name: balaji.raghu@one-consultants.com
